@@ -1,0 +1,134 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <mpi.h>
+
+#define MAX_LINE_LENGTH 100
+
+// Structure to hold traffic data
+typedef struct {
+    int traffic_light_id;
+    char timestamp[9]; // Assuming timestamp format HH:MM:SS
+    int number_of_cars;
+} TrafficData;
+
+// Structure to hold traffic light count
+typedef struct {
+    int traffic_light_id;
+    int count;
+} TrafficCount;
+
+// Function to read traffic data from a file
+void read_traffic_data(const char *filename, TrafficData **data, int *data_size) {
+    FILE *file = fopen(filename, "r");
+    if (file == NULL) {
+        perror("Error opening file");
+        exit(EXIT_FAILURE);
+    }
+
+    int num_lines = 0;
+    char line[MAX_LINE_LENGTH];
+    while (fgets(line, MAX_LINE_LENGTH, file) != NULL) {
+        num_lines++;
+    }
+    rewind(file);
+
+    *data_size = num_lines - 1; // Exclude the header line
+    *data = (TrafficData *)malloc(num_lines * sizeof(TrafficData));
+
+    // Skip header line
+    fgets(line, MAX_LINE_LENGTH, file);
+
+    int i = 0;
+    while (fgets(line, MAX_LINE_LENGTH, file) != NULL) {
+        sscanf(line, "%d %s %d", &((*data)[i].traffic_light_id), (*data)[i].timestamp, &((*data)[i].number_of_cars));
+        i++;
+    }
+
+    fclose(file);
+}
+
+// Comparison function for sorting traffic counts in descending order
+int compare_desc(const void *a, const void *b) {
+    TrafficCount *count_a = (TrafficCount *)a;
+    TrafficCount *count_b = (TrafficCount *)b;
+    return count_b->count - count_a->count;
+}
+
+// Function to find top N congested traffic lights and print them in the desired format
+void find_top_congested(TrafficData *data, int data_size, int top_n, int rank, const char *time) {
+    // Create an array to store counts for each traffic light
+    TrafficCount *traffic_light_counts = (TrafficCount *)malloc(data_size * sizeof(TrafficCount));
+
+    // Initialize counts to 0
+    for (int i = 0; i < data_size; i++) {
+        traffic_light_counts[i].traffic_light_id = data[i].traffic_light_id;
+        traffic_light_counts[i].count = 0;
+    }
+
+    // Parse the provided time to get the hour
+    char hour[3];
+    strncpy(hour, time, 2);
+    hour[2] = '\0';
+    int target_hour = atoi(hour);
+
+    // Calculate counts for each traffic light
+    for (int i = 0; i < data_size; i++) {
+        char data_hour[3];
+        strncpy(data_hour, data[i].timestamp, 2);
+        data_hour[2] = '\0';
+        int data_hour_int = atoi(data_hour);
+
+        if (data_hour_int == target_hour) {
+            int index = data[i].traffic_light_id - 1;
+            traffic_light_counts[index].count += data[i].number_of_cars;
+        }
+    }
+
+    // Sort traffic_light_counts in descending order
+    qsort(traffic_light_counts, data_size, sizeof(TrafficCount), compare_desc);
+
+    // Print the top congested traffic lights in the desired format
+    if (rank == 0) {
+        printf("Traffic lights sorted according to most busy | Time: %s\n", time);
+        printf("Traf Lgt\tNumber of Cars\n");
+        for (int i = 0; i < top_n; i++) {
+            printf("%d\t\t%d\n", traffic_light_counts[i].traffic_light_id, traffic_light_counts[i].count);
+        }
+        printf("\n");
+    }
+
+    // Free dynamically allocated memory
+    free(traffic_light_counts);
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <traffic_data_file>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    MPI_Init(&argc, &argv);
+
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    TrafficData *data = NULL;
+    int data_size = 0;
+
+    read_traffic_data(argv[1], &data, &data_size); // All processes read the data
+
+    // Find top congested traffic lights for different times with one-hour intervals
+    for (int hour = 7; hour <= 9; hour++) {
+        char time[9];
+        sprintf(time, "%02d:00:00", hour);
+        find_top_congested(data, data_size, 4, rank, time);
+    }
+
+    // Free dynamically allocated memory
+    free(data);
+
+    MPI_Finalize();
+    return 0;
+}
